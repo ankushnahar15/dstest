@@ -1,0 +1,211 @@
+Mongo notes:
+
+Schema Design:
+==============
+
+Schema design in mongo depends on access pattern of the application unlike RDBMS where it is independent of application (we try to build a normalized model in RDBMS)
+
+1. One to One relationship:
+We can use embedded style or manual reference style. It depends on Frequency of access,size of document, atomicity in transactions
+
+2. One to many relationship:
+In such case we can use embedded style, but when many is very large and common, then it becomes repetitive and can lead to update anomalies.
+Example: one city ==> many people
+We can have a City collection and embed person array -- bad design.. people can be huge
+We can have people collection and embed city as document-- bad design.. repetitive city doc and lead to modification anomaly if city attribute changes..Change has to be made at no. places
+We can have seperate collections city and people and reference it. -- good design
+One ==> Few
+Can use embedded. 
+Ex: one post ==> few comments
+comments are few and can be embedded in same doc. also each comment is different. so does not become repetitive
+
+3. Many to Many
+Students <==> teachers
+Books <==> Authors
+Use them in separate collection and reference by ids
+
+
+Storage Engines:
+=================
+A storage engine is the part of a database that is responsible for managing how data is stored, both in memory and on disk. Many databases support multiple storage engines, where different engines perform better for specific workloads. For example, one storage engine might offer better performance for read-heavy workloads, and another might support a higher throughput for write operations.
+
+with Mongo 3.2, default storage is Wired Tiger.
+Wired Tiger: General Purpose storage engine. WiredTiger uses document-level concurrency control for write operations. As a result, multiple clients can modify different documents of a collection at the same time.
+MMAPv1 had collection level locking.
+
+With Wired Tiger as storage engine, MongoDB transfers all data in snapshot to the disk at interval of 60 seconds or 2GB whichever appears earlier. This creates the new check point.
+when a transaction fails, system is recovered until last checkpoint.
+
+By default, WiredTiger uses block compression with the snappy compression library for all collections and prefix compression for all indexes.
+MMAPv1 does not use compression.
+refer https://www.kenwalger.com/blog/nosql/mongodb/mongodb-storage-engine-journaling/ --excellent
+
+EXPLAIN PLAN:
+=============
+db.collectionname.find().explain --execution plan
+
+returns information for the query plan based on verbosity mode.
+
+Modes based on amount of info returned.
+1.queryPlanner
+2.executionStats
+3.allPlansExecution
+
+queryPlanner mode - default mode. Mongodb returns winning plan for the operation.
+executionStats mode - mongodb returns winning plan, executes wining plan and returns execution stats of winning plan.
+allPlansExecution mode - query optimizer returns winning plan, executes it and return statisticsof winning plan plus statistics of rejected plan.
+
+Index rules:
+
+1) Single field Indexes: Query should have indexed filed as predicate. sort can be either way ascending or descending in single field indexes.
+Index can be created on embedded fields same as normal fields. Use dot notation to create index on embedded fields.
+Index on embedded document can also be created that indexes all the contents of the sub doc.
+While querying , predicate should include the embed doc fields in the same order as in sub doc.
+When performing equality matches on embedded documents, field order matters and the embedded documents must match exactly. 
+2) Multi key indexes: for query to use index for filtering it should be prefix of the index keys.
+					  for query to use index for sorting it should be in the same order of occurrence as the index keys. and the sort order should be same or inverse.
+					  you can use index in sort even if it is not prefix when predicate matches the remaining prefix.					  					 
+ 
+ https://docs.mongodb.com/manual/tutorial/sort-results-with-indexes/
+ 
+ 
+ 
+ 
+ 
+ Aggregation:
+ =============
+ Can perform in three ways:
+ Aggregation pipeline
+ Map reduce function
+ Single purpose aggregation methods like count and distinct
+ 
+ Aggregation pipeline: it is a framework where document enters various stages of reshaping,transformation and aggregation. Output of one stage is input for another stage.
+ 
+ Types of aggregation stages:
+ Projection
+ Filtering
+ Grouping
+ Sorting
+ aggregation with arrays
+ 
+ Aggregation can work on sharded collections.
+ 
+Aggregation restriction:
+========================
+========================
+1. Result size restrictions: The aggregate command can return either a cursor or store the results in a collection. When returning a cursor or storing the results in a collection, each document in the result set is subject to the BSON Document Size limit, currently 16 megabytes; if any single document that exceeds the BSON Document Size limit, the command will produce an error.
+
+2. Memory restrictions:
+Pipeline stages have a limit of 100 megabytes of RAM. If a stage exceeds this limit, MongoDB will produce an error. To allow for the handling of large datasets, use the allowDiskUse option to enable aggregation pipeline stages to write data to temporary files.
+
+Aggregation optimization techniques:
+=====================================
+=====================================
+MongoDb uses optimization techniques internally in aggregation pipeline for improved performance.
+
+Pipeline Sequence Optimization: change the sequence of operation to optimize the aggregation
+-------------------------------
+1. If project + match, then optimizer can move the filters in match to the top of project if the filters are not modified/computed in project stage.
+project + match ==> match(non dependable filters) + project + match(dependable filters on project)
+
+2. If sort + match ==> match + sort to minimize sorting
+
+3. skip(5)+limit(10) ==> limit(15) + skip(5)
+When you have a sequence with $skip followed by a $limit, the $limit moves before the $skip. With the reordering, the $limit value increases by the $skip amount.
+
+4.project + skip or limit ==> skip or limit+ project
+
+Pipeline Coalescence Optimization:
+---------------------------------
+optimizer merges the pipeline phase into its predecessor
+coalescence occurs after any sequence reordering optimization.
+
+1. sort + limit(n) ==> optimizer will have to sort only n documents.
+2.limit(n1) + limit(n2)  = limit(n1) where n1 < n2
+ex:
+{ $limit: 100 },
+{ $limit: 10 }
+
+after opimization: {$limit:10}
+
+3.skip(n1) + skip(n2) ==> skip(n1+n2)
+4. match1 + match2 ==> match1 and match2
+5. lookup + unwind ==> merge when unwind acts on "as" fileds of lookup.
+6. sort + skip + limit ==> first sequence optimization of skip+limit. Then coalescence of sort and skip.
+7.{ $limit: 100 },
+{ $skip: 5 },
+{ $limit: 10 },
+{ $skip: 2 }
+
+{ $limit: 100 },
+{ $limit: 15},
+{ $skip: 5 },
+{ $skip: 2 }
+
+{ $limit: 15 },
+{ $skip: 7 }
+
+
+
+
+
+db.mappers.aggregate([
+{$match: {mapperId : "PM_US_I_L0"}},
+{$unwind: "$response"},
+{$lookup: {
+     from: 'sections', 
+     localField: 'response', 
+     foreignField: 'sectionId', 
+     as: 'responseFields'}},
+{ "$unwind": "$responseFields" },
+{"$project" :{"response":0,"responseFields.sectionId":0}},
+{ "$group" :{ "_id" : "$_id",
+            "success" : { $first: '$success' },
+            "message" : { $first: '$message' },
+            "responseCode" : { $first: '$responseCode' },
+            "mapperId" : { $first: '$mapperId' },          
+            "response" :{"$push":"$responseFields"}
+         }},
+{"$project" :{"response._id":0}},         
+]) 
+ 
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
